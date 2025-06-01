@@ -1,0 +1,34 @@
+# Logs
+logs/
+*.log
+
+# Socket file
+claude_controller.sock
+.restart-manager
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing
+.coverage
+.pytest_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
