@@ -134,4 +134,4 @@ The Unix socket is created at `.claudecontroller.d/claude_controller.sock` to su
 
 ## License
 
-MIT
+WTFPL - Do What The Fuck You Want To Public License
