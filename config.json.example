@@ -9,5 +9,16 @@
   },
   "process": {
     "termination_timeout": 5
+  },
+  "claude_runner": {
+    "dangerously_skip_permissions": true,
+    "default_model": null,
+    "node_setup": {
+      "type": "auto",
+      "nvm_dir": null,
+      "nvm_script": null,
+      "node_path": null,
+      "claude_path": null
+    }
   }
 }

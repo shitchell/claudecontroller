@@ -63,6 +63,10 @@ A flexible process management system for running and monitoring long-running com
 - `bash-watch <name> [--lines N]` - Watch process output
 - `bash-stop <name>` - Stop a process
 
+### Claude Runner Commands
+- `runner '<prompt>' [--context-file <file>] [--report <file>] [--name <name>]` - Run Claude AI
+- `runner-status [--name <name>] [--json]` - Show detailed Claude runner metrics
+
 ## Examples
 
 ```bash
@@ -78,6 +82,24 @@ A flexible process management system for running and monitoring long-running com
 
 # Watch output
 ./claudecontroller bash-watch unit-tests-12345 --lines 50
+
+# Run Claude with context
+./claudecontroller runner 'Explain this code' --context-file main.py
+
+# Claude with report output
+./claudecontroller runner 'Analyze project structure' --report analysis.md
+
+# Check Claude runner status
+./claudecontroller runner-status
+● claude-24680
+  Status: running (PID: 24680)
+  Duration: 45s
+  Model: claude-opus-4-20250514
+  Tools: 3 Read, 1 Write, 2 Bash
+  Tokens: 15,234 (in: 12,456, out: 2,778)
+  Cost: $0.0534
+  Stream log: 20250604_143022_claude-24680_stream.jsonl
+  Report log: 20250604_143022_claude-24680_report.json
 
 # Global options
 ./claudecontroller -v bash-status          # Verbose output
