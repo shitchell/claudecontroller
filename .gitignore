@@ -7,6 +7,9 @@ logs/*
 claude_controller.sock
 .restart-manager
 
+# Configuration
+config.json
+
 # Python
 __pycache__/
 *.py[cod]

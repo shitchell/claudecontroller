@@ -9,10 +9,27 @@ import sys
 import argparse
 from pathlib import Path
 
-# Use socket in the same directory as this script
 # Resolve symlinks to get the actual script location
 script_path = Path(__file__).resolve()
-DEFAULT_SOCKET_PATH = str(script_path.parent / 'claude_controller.sock')
+controller_dir = script_path.parent
+
+# Load configuration
+config_path = controller_dir / 'config.json'
+if config_path.exists():
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+else:
+    # Default configuration if config.json doesn't exist
+    config = {
+        'socket': {
+            'path': 'claude_controller.sock',
+            'timeout': 1.0
+        }
+    }
+
+# Get socket path from config
+socket_filename = config.get('socket', {}).get('path', 'claude_controller.sock')
+DEFAULT_SOCKET_PATH = str(controller_dir / socket_filename)
 
 def send_command(command: str, args: list, socket_path: str) -> dict:
     """Send command to the launch manager"""

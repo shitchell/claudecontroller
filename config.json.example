@@ -1,0 +1,13 @@
+{
+  "socket": {
+    "path": "claude_controller.sock",
+    "timeout": 1.0
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s [%(levelname)s] %(message)s"
+  },
+  "process": {
+    "termination_timeout": 5
+  }
+}

@@ -26,8 +26,15 @@ class ProcessManager:
         self.commands: Dict[str, Callable] = {}
         self.command_help: Dict[str, str] = {}
         self.command_modules: Dict[str, Any] = {}  # Store modules for help
-        # Use socket in the same directory as the manager
-        self.socket_path = str(Path(__file__).parent / 'claude_controller.sock')
+        
+        # Load configuration
+        self.controller_dir = Path(__file__).resolve().parent
+        self.config = self._load_config()
+        
+        # Get socket path from config
+        socket_filename = self.config.get('socket', {}).get('path', 'claude_controller.sock')
+        self.socket_path = str(self.controller_dir / socket_filename)
+        self.socket_timeout = self.config.get('socket', {}).get('timeout', 1.0)
         self.running = True
         
         # Set up logging
@@ -39,19 +46,49 @@ class ProcessManager:
         # Load plugin commands
         self._load_plugin_commands()
     
+    def _load_config(self) -> Dict[str, Any]:
+        """Load configuration from config.json"""
+        config_path = self.controller_dir / 'config.json'
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading config.json: {e}")
+        
+        # Return default configuration
+        return {
+            'socket': {
+                'path': 'claude_controller.sock',
+                'timeout': 1.0
+            },
+            'logging': {
+                'level': 'INFO',
+                'format': '%(asctime)s [%(levelname)s] %(message)s'
+            },
+            'process': {
+                'termination_timeout': 5
+            }
+        }
+    
     def _setup_logging(self):
         """Set up logging for the manager"""
-        log_dir = Path(__file__).parent / 'logs'
+        log_dir = self.controller_dir / 'logs'
         log_dir.mkdir(exist_ok=True)
         
         # Create log file with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         log_file = log_dir / f'launch-manager_{timestamp}.log'
         
+        # Get logging config
+        log_config = self.config.get('logging', {})
+        log_level = getattr(logging, log_config.get('level', 'INFO').upper(), logging.INFO)
+        log_format = log_config.get('format', '%(asctime)s [%(levelname)s] %(message)s')
+        
         # Configure logging
         logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s [%(levelname)s] %(message)s',
+            level=log_level,
+            format=log_format,
             handlers=[
                 logging.FileHandler(log_file),
                 logging.StreamHandler(sys.stdout)
@@ -146,20 +183,32 @@ class ProcessManager:
     
     def cmd_restart_manager(self, args: list) -> Dict[str, Any]:
         """Restart the launch manager"""
-        restart_file = Path(__file__).parent / '.restart-manager'
         try:
-            restart_file.touch()
-            return {
-                'success': True, 
-                'message': 'Manager restart requested. The manager should restart automatically.'
-            }
+            # Find the parent launch.sh process
+            current_process = psutil.Process(os.getpid())
+            parent_process = current_process.parent()
+            
+            if parent_process and 'launch.sh' in ' '.join(parent_process.cmdline()):
+                # Send SIGHUP to launch.sh
+                parent_process.send_signal(signal.SIGHUP)
+                return {
+                    'success': True, 
+                    'message': 'Manager restart requested via SIGHUP. The manager should restart automatically.'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Could not find launch.sh parent process.\n\n' +
+                            'To manually restart the manager:\n' +
+                            '1. Find the launch.sh process: ps aux | grep launch.sh\n' +
+                            '2. Send SIGHUP: kill -HUP <pid>\n' +
+                            '3. Or restart the launch.sh process in your terminal'
+                }
         except Exception as e:
             return {
                 'success': False,
-                'error': f'Failed to create restart file: {e}\n\n' +
-                        'To manually restart the manager:\n' +
-                        f'1. Create the restart file: touch {restart_file}\n' +
-                        '2. Or restart the launch.sh process in your terminal'
+                'error': f'Failed to send restart signal: {e}\n\n' +
+                        'To manually restart the manager, send SIGHUP to the launch.sh process.'
             }
     
     def cmd_shutdown(self, args: list) -> Dict[str, Any]:
@@ -215,9 +264,10 @@ class ProcessManager:
         """Stop a managed process"""
         if name in self.processes:
             proc = self.processes[name]
+            termination_timeout = self.config.get('process', {}).get('termination_timeout', 5)
             try:
                 proc.terminate()
-                proc.wait(timeout=5)
+                proc.wait(timeout=termination_timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
             except:
@@ -259,7 +309,7 @@ class ProcessManager:
         
         while self.running:
             try:
-                server_socket.settimeout(1.0)
+                server_socket.settimeout(self.socket_timeout)
                 client, _ = server_socket.accept()
                 threading.Thread(target=self.handle_client, args=(client,)).start()
             except socket.timeout:

@@ -13,12 +13,52 @@ if [ ! -L "$PARENT_DIR/claudecontroller" ]; then
     echo "✓ Symlink created: $PARENT_DIR/claudecontroller -> $SCRIPT_DIR/claudecontroller"
 fi
 
-# Simple wrapper that monitors for manager restart requests
-while true; do
+# Variables for managing restart
+MANAGER_PID=""
+RESTART_REQUESTED=false
+
+# Function to start the manager
+start_manager() {
     python "$SCRIPT_DIR/launch-manager.py" &
     MANAGER_PID=$!
-    while kill -0 $MANAGER_PID 2>/dev/null && [ ! -f "$SCRIPT_DIR/.restart-manager" ]; do
+    echo "Launch manager started with PID: $MANAGER_PID"
+}
+
+# Function to stop the manager
+stop_manager() {
+    if [ -n "$MANAGER_PID" ] && kill -0 $MANAGER_PID 2>/dev/null; then
+        echo "Stopping launch manager (PID: $MANAGER_PID)..."
+        kill $MANAGER_PID 2>/dev/null
+        wait $MANAGER_PID 2>/dev/null
+    fi
+}
+
+# Trap for restart on SIGHUP
+trap 'RESTART_REQUESTED=true' SIGHUP
+
+# Trap for clean shutdown
+trap 'echo "Shutting down..."; stop_manager; exit 0' SIGINT SIGTERM
+
+# Main loop
+while true; do
+    start_manager
+    
+    # Wait for manager to exit or restart signal
+    while kill -0 $MANAGER_PID 2>/dev/null; do
+        if [ "$RESTART_REQUESTED" = true ]; then
+            echo "Restart requested via SIGHUP"
+            RESTART_REQUESTED=false
+            stop_manager
+            break
+        fi
         sleep 1
     done
-    [ -f "$SCRIPT_DIR/.restart-manager" ] && rm "$SCRIPT_DIR/.restart-manager" && kill $MANAGER_PID 2>/dev/null
+    
+    # If manager died unexpectedly, wait a bit before restarting
+    if kill -0 $MANAGER_PID 2>/dev/null; then
+        echo "Manager stopped, restarting..."
+    else
+        echo "Manager died unexpectedly, restarting in 2 seconds..."
+        sleep 2
+    fi
 done
