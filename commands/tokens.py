@@ -82,7 +82,7 @@ def calculate_context_stats(usage):
     
     # Claude model limits
     context_window = 200000
-    claude_code_cutoff = 190000
+    claude_code_cutoff = 165000
     
     # Calculate remaining
     remaining_tokens = claude_code_cutoff - total_context
