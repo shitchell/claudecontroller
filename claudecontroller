@@ -40,10 +40,16 @@ def send_command(command: str, args: list, socket_path: str) -> dict:
         request = {'command': command, 'args': args}
         client.send(json.dumps(request).encode())
         
-        response = client.recv(4096)
+        # Receive response in chunks to handle larger responses
+        response_data = b''
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response_data += chunk
         client.close()
         
-        return json.loads(response.decode())
+        return json.loads(response_data.decode())
     except FileNotFoundError:
         return {
             'success': False, 

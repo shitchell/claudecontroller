@@ -21,6 +21,8 @@ def get_parser():
                        help='Analyze token usage across todo items')
     parser.add_argument('-n', '--sessions', type=int, default=1, metavar='N',
                        help='Number of recent sessions to analyze (default: 1)')
+    parser.add_argument('--jsonl', type=str, metavar='PATH',
+                       help='Use specific JSONL file instead of auto-detecting')
     return parser
 
 
@@ -108,7 +110,7 @@ def parse_session_todos(stream_file):
     todo_events = []
     
     try:
-        with open(stream_file, 'r') as f:
+        with open(stream_file, 'r', encoding='utf-8', errors='replace') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
@@ -129,10 +131,22 @@ def parse_session_todos(stream_file):
                             'total_tokens': todo_event['total_tokens'],
                             'usage': todo_event['usage']
                         })
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    # Log the problematic line for debugging
+                    print(f"[tokens] JSON decode error at line {line_num}: {e}")
+                    print(f"[tokens] Problematic line preview: {line[:100]}...")
                     continue
-    except (FileNotFoundError, IOError):
+                except Exception as e:
+                    # Skip any other parsing errors
+                    print(f"[tokens] Unexpected error at line {line_num}: {type(e).__name__}: {e}")
+                    continue
+    except (FileNotFoundError, IOError) as e:
+        # File access errors - return empty list
+        print(f"[tokens] File access error: {e}")
         pass
+    except Exception as e:
+        # Any other unexpected errors
+        print(f"[tokens] Warning: Error parsing {stream_file}: {e}")
     
     return sorted(todo_events, key=lambda x: x['timestamp'])
 
@@ -231,8 +245,8 @@ def calculate_todo_metrics(todo_tracking):
                 'completed_at': None,
                 'status': 'unknown',
                 'total_tokens': None,
-                'duration': None,
-                'all_events': tracking['all_events']  # Include for debugging
+                'duration': None
+                # Removed all_events to avoid serialization issues
             }
     
     return todo_metrics
@@ -370,13 +384,25 @@ def get_token_usage(stream_file):
             if not lines:
                 return None
             
-            last_line = lines[-1].strip()
-            data = json.loads(last_line)
+            # Try to find the last message with usage info
+            # Start from the end and work backwards
+            for i in range(len(lines) - 1, -1, -1):
+                line = lines[i].strip()
+                if not line:
+                    continue
+                    
+                try:
+                    data = json.loads(line)
+                    # Look for usage data in the message
+                    if 'message' in data and 'usage' in data.get('message', {}):
+                        usage = data['message']['usage']
+                        if usage:  # Make sure it's not empty
+                            return usage
+                except json.JSONDecodeError:
+                    continue
             
-            # Extract usage from the message
-            usage = data.get('message', {}).get('usage', {})
-            return usage
-    except (json.JSONDecodeError, FileNotFoundError, KeyError):
+            return None
+    except (FileNotFoundError, IOError) as e:
         return None
 
 
@@ -455,12 +481,22 @@ def command(manager, args):
     
     if parsed.todos:
         # Todo analysis mode
-        stream_files = get_recent_stream_files(cwd, parsed.sessions)
-        if not stream_files:
-            return {
-                'success': False,
-                'message': 'No Claude Code conversations found for this directory'
-            }
+        if parsed.jsonl:
+            # Use specified file
+            stream_files = [Path(parsed.jsonl)]
+            # Verify file exists
+            if not stream_files[0].exists():
+                return {
+                    'success': False,
+                    'message': f'File not found: {parsed.jsonl}'
+                }
+        else:
+            stream_files = get_recent_stream_files(cwd, parsed.sessions)
+            if not stream_files:
+                return {
+                    'success': False,
+                    'message': 'No Claude Code conversations found for this directory'
+                }
         
         # Analyze todos by session
         sessions_analysis = analyze_sessions_todos(stream_files)
@@ -474,12 +510,21 @@ def command(manager, args):
         }
     else:
         # Regular token usage mode
-        stream_file = find_latest_stream_file(cwd)
-        if not stream_file:
-            return {
-                'success': False,
-                'message': 'No Claude Code conversation found for this directory'
-            }
+        if parsed.jsonl:
+            # Use specified file
+            stream_file = Path(parsed.jsonl)
+            if not stream_file.exists():
+                return {
+                    'success': False,
+                    'message': f'File not found: {parsed.jsonl}'
+                }
+        else:
+            stream_file = find_latest_stream_file(cwd)
+            if not stream_file:
+                return {
+                    'success': False,
+                    'message': 'No Claude Code conversation found for this directory'
+                }
         
         # Get token usage
         usage = get_token_usage(stream_file)
