@@ -14,6 +14,7 @@ import sys
 import importlib.util
 import inspect
 import logging
+import atexit
 from pathlib import Path
 from typing import Dict, Any, Callable, Optional, Tuple
 from datetime import datetime
@@ -37,8 +38,14 @@ class ProcessManager:
         self.socket_timeout = self.config.get('socket', {}).get('timeout', 1.0)
         self.running = True
         
+        # PID file management
+        self.pid_file = self.controller_dir / '.pid'
+        
         # Set up logging
         self._setup_logging()
+        
+        # Create PID file and register cleanup
+        self._create_pid_file()
         
         # Load built-in commands
         self._register_builtin_commands()
@@ -76,9 +83,10 @@ class ProcessManager:
         log_dir = self.controller_dir / 'logs'
         log_dir.mkdir(exist_ok=True)
         
-        # Create log file with timestamp
+        # Create log file with timestamp and PID
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file = log_dir / f'launch-manager_{timestamp}.log'
+        pid = os.getpid()
+        log_file = log_dir / f'launch-manager_{timestamp}_{pid}.log'
         
         # Get logging config
         log_config = self.config.get('logging', {})
@@ -97,6 +105,29 @@ class ProcessManager:
         
         self.logger = logging.getLogger(__name__)
         self.logger.info("Launch manager started")
+    
+    def _create_pid_file(self):
+        """Create PID file and register cleanup"""
+        try:
+            # Write current PID to file
+            with open(self.pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+            
+            # Register cleanup function
+            atexit.register(self._cleanup_pid_file)
+            
+            self.logger.info(f"Created PID file: {self.pid_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to create PID file: {e}")
+    
+    def _cleanup_pid_file(self):
+        """Clean up PID file on exit"""
+        try:
+            if self.pid_file.exists():
+                self.pid_file.unlink()
+                self.logger.info(f"Removed PID file: {self.pid_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to remove PID file: {e}")
     
     def _register_builtin_commands(self):
         """Register built-in commands"""
@@ -400,6 +431,7 @@ def main():
     def signal_handler(signum, frame):
         print("\nShutting down...")
         manager.running = False
+        manager._cleanup_pid_file()
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -129,13 +130,65 @@ def parse_line_for_task_event(line_data):
     }
 
 
+def generate_unique_id(content, session_id, parent_id=None, item_type="todo"):
+    """Generate a unique ID for todo/task items"""
+    # Create a string to hash from meaningful components
+    id_components = [
+        item_type,
+        session_id,
+        content[:100],  # First 100 chars of content to avoid huge hashes
+    ]
+    
+    if parent_id:
+        id_components.append(parent_id)
+    
+    # Join components and create hash
+    id_string = "|".join(str(c) for c in id_components)
+    
+    # Create a short, readable hash (first 8 chars of SHA256)
+    hash_object = hashlib.sha256(id_string.encode('utf-8'))
+    unique_id = hash_object.hexdigest()[:8]
+    
+    return unique_id
+
+
+def generate_task_unique_id(uuid, content, session_id, parent_uuid=None):
+    """Generate a unique ID for task items"""
+    # For tasks, use the UUID as the primary identifier with session context
+    id_components = [
+        "task",
+        session_id,
+        uuid,
+        content[:50],  # Shorter content for tasks
+    ]
+    
+    if parent_uuid:
+        id_components.append(parent_uuid)
+    
+    id_string = "|".join(str(c) for c in id_components)
+    hash_object = hashlib.sha256(id_string.encode('utf-8'))
+    unique_id = hash_object.hexdigest()[:8]
+    
+    return unique_id
+
+
+def clean_text_for_display(text):
+    """Clean text for display by replacing newlines with spaces"""
+    if not text:
+        return text
+    # Replace all types of newlines with single spaces and normalize whitespace
+    cleaned = ' '.join(str(text).split())
+    return cleaned
+
+
 def get_content_preview(message):
     """Get a preview of message content for task identification"""
     content = message.get('content', '')
     
     # Handle string content
     if isinstance(content, str):
-        return content[:100] + '...' if len(content) > 100 else content
+        preview = content[:100] + '...' if len(content) > 100 else content
+        return clean_text_for_display(preview)
     
     # Handle list content (tool uses, etc.)
     if isinstance(content, list):
@@ -149,9 +202,11 @@ def get_content_preview(message):
                     text_parts.append(f'[{tool_name}]')
         
         preview = ' '.join(text_parts)
-        return preview[:100] + '...' if len(preview) > 100 else preview
+        preview = preview[:100] + '...' if len(preview) > 100 else preview
+        return clean_text_for_display(preview)
     
-    return str(content)[:100]
+    preview = str(content)[:100]
+    return clean_text_for_display(preview)
 
 
 def calculate_total_tokens(usage):
@@ -313,7 +368,7 @@ def track_todo_lifecycle(todo_events):
     return todo_tracking
 
 
-def calculate_todo_metrics(todo_tracking):
+def calculate_todo_metrics(todo_tracking, session_id):
     """Calculate token usage metrics for todos"""
     todo_metrics = {}
     
@@ -322,6 +377,9 @@ def calculate_todo_metrics(todo_tracking):
         completed = tracking['completed_event']
         todo_id = tracking['id']
         
+        # Generate unique ID
+        unique_id = generate_unique_id(todo_content, session_id, item_type="todo")
+        
         if in_progress and completed:
             # Calculate from in_progress to completed
             token_delta = completed['tokens'] - in_progress['tokens']
@@ -329,6 +387,7 @@ def calculate_todo_metrics(todo_tracking):
                 duration = completed['timestamp'] - in_progress['timestamp']
                 todo_metrics[todo_content] = {
                     'id': todo_id,
+                    'unique_id': unique_id,
                     'started_at': in_progress['timestamp'],
                     'completed_at': completed['timestamp'],
                     'status': 'completed',
@@ -339,6 +398,7 @@ def calculate_todo_metrics(todo_tracking):
             # Todo still in progress
             todo_metrics[todo_content] = {
                 'id': todo_id,
+                'unique_id': unique_id,
                 'started_at': in_progress['timestamp'],
                 'completed_at': None,
                 'status': 'in_progress',
@@ -349,6 +409,7 @@ def calculate_todo_metrics(todo_tracking):
             # Unknown - doesn't have proper in_progress -> completed flow
             todo_metrics[todo_content] = {
                 'id': todo_id,
+                'unique_id': unique_id,
                 'started_at': None,
                 'completed_at': None,
                 'status': 'unknown',
@@ -370,7 +431,7 @@ def analyze_sessions_todos(stream_files):
         
         if todo_events:
             todo_tracking = track_todo_lifecycle(todo_events)
-            todo_metrics = calculate_todo_metrics(todo_tracking)
+            todo_metrics = calculate_todo_metrics(todo_tracking, session_id)
             
             sessions_analysis[session_id] = {
                 'file': str(stream_file),
@@ -381,7 +442,7 @@ def analyze_sessions_todos(stream_files):
     return sessions_analysis
 
 
-def build_task_chains(task_events):
+def build_task_chains(task_events, session_id=None):
     """Build task chains from task events with correct token calculation"""
     # Group by chain: sidechain tasks and their descendants
     task_chains = {}
@@ -397,8 +458,20 @@ def build_task_chains(task_events):
         if event['is_sidechain'] and event['parent_uuid'] is None:
             # This is a sidechain root - start a new chain
             chain_id = event['uuid']
+            
+            # Generate unique ID for this task chain
+            unique_id = None
+            if session_id:
+                unique_id = generate_task_unique_id(
+                    event['uuid'], 
+                    event['content_preview'], 
+                    session_id, 
+                    event['parent_uuid']
+                )
+            
             task_chains[chain_id] = {
                 'root_task': event,
+                'unique_id': unique_id,
                 'tasks': [],
                 'total_tokens': 0,
                 'task_count': 0,
@@ -473,7 +546,7 @@ def analyze_sessions_tasks(stream_files):
         task_events = parse_session_tasks(stream_file)
         
         if task_events:
-            task_chains = build_task_chains(task_events)
+            task_chains = build_task_chains(task_events, session_id)
             
             sessions_analysis[session_id] = {
                 'file': str(stream_file),
@@ -505,13 +578,13 @@ def analyze_sessions_unified(stream_files):
         
         # Process tasks if available
         if task_events:
-            task_chains = build_task_chains(task_events)
+            task_chains = build_task_chains(task_events, session_id)
             unified_data['task_chains'] = task_chains
         
         # Process todos if available
         if todo_events:
             todo_tracking = track_todo_lifecycle(todo_events)
-            todo_metrics = calculate_todo_metrics(todo_tracking)
+            todo_metrics = calculate_todo_metrics(todo_tracking, session_id)
             unified_data['todos'] = todo_metrics
         
         sessions_analysis[session_id] = unified_data
@@ -547,7 +620,9 @@ def format_session_todos(session_id, session_data):
         else:
             status_emoji = "❓"
         
-        output.append(f"{status_emoji} {todo_content}")
+        # Clean todo content for display
+        clean_todo_content = clean_text_for_display(todo_content)
+        output.append(f"{status_emoji} {clean_todo_content}")
         output.append(f"   ID: {metrics['id']}")
         output.append(f"   Status: {metrics['status']}")
         
@@ -690,8 +765,9 @@ def format_todos_brief(sessions_analysis):
             else:
                 duration_str = "?duration"
             
-            # Truncate content to fit brief format
-            brief_content = todo_content[:50] + "..." if len(todo_content) > 50 else todo_content
+            # Clean and truncate content to fit brief format
+            clean_content = clean_text_for_display(todo_content)
+            brief_content = clean_content[:50] + "..." if len(clean_content) > 50 else clean_content
             output.append(f"- {brief_content} -- {tokens_str} -- {duration_str}")
         
         output.append("")  # Blank line between sessions
@@ -719,6 +795,7 @@ def format_todos_output(sessions_analysis, json_output=False, brief=False):
             for todo_content, metrics in session_data['todos'].items():
                 serializable[session_id]['todos'][todo_content] = {
                     'id': metrics.get('id'),
+                    'unique_id': metrics.get('unique_id'),
                     'started_at': metrics['started_at'].isoformat() if metrics['started_at'] else None,
                     'completed_at': metrics['completed_at'].isoformat() if metrics['completed_at'] else None,
                     'status': metrics['status'],
@@ -797,7 +874,9 @@ def format_session_unified(session_id, session_data):
                 status_emoji = "❓"
             
             tokens_info = f"{metrics['total_tokens']:,}" if metrics['total_tokens'] else "unknown"
-            output.append(f"   {status_emoji} {todo_content[:60]}...")
+            clean_content = clean_text_for_display(todo_content)
+            truncated_content = clean_content[:60] + "..." if len(clean_content) > 60 else clean_content
+            output.append(f"   {status_emoji} {truncated_content}")
             output.append(f"      Status: {metrics['status']}, Tokens: {tokens_info}")
         
         output.append("")
@@ -835,6 +914,7 @@ def format_tasks_output(sessions_analysis, json_output=False):
             }
             for chain_id, chain_data in session_data['task_chains'].items():
                 serializable[session_id]['task_chains'][chain_id] = {
+                    'unique_id': chain_data.get('unique_id'),
                     'task_count': chain_data['task_count'],
                     'total_tokens': chain_data['total_tokens'],
                     'start_time': chain_data['start_time'].isoformat() if chain_data['start_time'] else None,
@@ -889,6 +969,7 @@ def format_unified_output(sessions_analysis, json_output=False):
             # Serialize task chains
             for chain_id, chain_data in session_data['task_chains'].items():
                 serializable[session_id]['task_chains'][chain_id] = {
+                    'unique_id': chain_data.get('unique_id'),
                     'task_count': chain_data['task_count'],
                     'total_tokens': chain_data['total_tokens'],
                     'start_time': chain_data['start_time'].isoformat() if chain_data['start_time'] else None,
@@ -900,6 +981,7 @@ def format_unified_output(sessions_analysis, json_output=False):
             for todo_content, metrics in session_data['todos'].items():
                 serializable[session_id]['todos'][todo_content] = {
                     'id': metrics.get('id'),
+                    'unique_id': metrics.get('unique_id'),
                     'started_at': metrics['started_at'].isoformat() if metrics['started_at'] else None,
                     'completed_at': metrics['completed_at'].isoformat() if metrics['completed_at'] else None,
                     'status': metrics['status'],

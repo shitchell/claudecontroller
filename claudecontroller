@@ -157,8 +157,22 @@ def main():
     if args.help and not args.command:
         # claudecontroller --help
         parser.print_help()
-        print("\nUse 'claudecontroller list-commands' to see all available commands")
-        print("Use 'claudecontroller help <command>' to see help for a specific command")
+        print("\nAvailable commands:")
+        
+        # Try to get command list from manager
+        try:
+            response = send_command('list-commands', [], args.socket)
+            if response.get('success') and 'commands' in response:
+                for cmd, help_text in sorted(response['commands'].items()):
+                    print(f"  {cmd:<20} - {help_text}")
+            else:
+                print("  (Could not retrieve command list - manager may not be running)")
+                print("\nUse 'claudecontroller list-commands' to see all available commands")
+        except Exception:
+            print("  (Could not retrieve command list - manager may not be running)")
+            print("\nUse 'claudecontroller list-commands' to see all available commands")
+        
+        print("\nUse 'claudecontroller help <command>' to see help for a specific command")
         sys.exit(0)
     
     if not args.command:
