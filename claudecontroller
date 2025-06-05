@@ -38,15 +38,30 @@ def send_command(command: str, args: list, socket_path: str) -> dict:
         client.connect(socket_path)
         
         request = {'command': command, 'args': args}
-        client.send(json.dumps(request).encode())
+        request_data = json.dumps(request).encode()
         
-        # Receive response in chunks to handle larger responses
-        response_data = b''
-        while True:
-            chunk = client.recv(4096)
+        # Send length prefix (8 bytes) followed by the JSON data
+        length_prefix = len(request_data).to_bytes(8, 'big')
+        client.send(length_prefix + request_data)
+        
+        # Read response length prefix
+        length_data = b''
+        while len(length_data) < 8:
+            chunk = client.recv(8 - len(length_data))
             if not chunk:
-                break
+                raise ConnectionError("Connection closed while reading length prefix")
+            length_data += chunk
+        
+        response_length = int.from_bytes(length_data, 'big')
+        
+        # Read exact response length
+        response_data = b''
+        while len(response_data) < response_length:
+            chunk = client.recv(min(4096, response_length - len(response_data)))
+            if not chunk:
+                raise ConnectionError("Connection closed while reading response")
             response_data += chunk
+        
         client.close()
         
         return json.loads(response_data.decode())

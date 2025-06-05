@@ -325,6 +325,53 @@ class ProcessManager:
     def handle_client(self, client_socket):
         """Handle client connections"""
         try:
+            # Try to read length prefix first (new protocol)
+            # Peek at first 8 bytes to check if it's the new protocol
+            client_socket.settimeout(0.1)  # Short timeout for peek
+            try:
+                first_bytes = client_socket.recv(8, socket.MSG_PEEK)
+                if len(first_bytes) == 8:
+                    # Try to interpret as length prefix
+                    potential_length = int.from_bytes(first_bytes, 'big')
+                    # Sanity check - if it's a reasonable length, use new protocol
+                    if 0 < potential_length < 10_000_000:  # Max 10MB
+                        # New protocol with length prefix
+                        client_socket.settimeout(self.socket_timeout)
+                        
+                        # Read the actual length prefix
+                        length_data = b''
+                        while len(length_data) < 8:
+                            chunk = client_socket.recv(8 - len(length_data))
+                            if not chunk:
+                                raise ConnectionError("Connection closed while reading length prefix")
+                            length_data += chunk
+                        
+                        request_length = int.from_bytes(length_data, 'big')
+                        
+                        # Read exact request length
+                        request_data = b''
+                        while len(request_data) < request_length:
+                            chunk = client_socket.recv(min(4096, request_length - len(request_data)))
+                            if not chunk:
+                                raise ConnectionError("Connection closed while reading request")
+                            request_data += chunk
+                        
+                        request = json.loads(request_data.decode())
+                        command = request.get('command', '')
+                        args = request.get('args', [])
+                        
+                        response = self.handle_command(command, args)
+                        response_data = json.dumps(response).encode()
+                        
+                        # Send length prefix followed by response
+                        length_prefix = len(response_data).to_bytes(8, 'big')
+                        client_socket.send(length_prefix + response_data)
+                        return
+            except socket.timeout:
+                pass
+            
+            # Fall back to old protocol (direct JSON)
+            client_socket.settimeout(self.socket_timeout)
             data = client_socket.recv(4096)
             if data:
                 request = json.loads(data.decode())
@@ -336,7 +383,13 @@ class ProcessManager:
                 client_socket.send(json.dumps(response).encode())
         except Exception as e:
             error_response = {'success': False, 'error': str(e)}
-            client_socket.send(json.dumps(error_response).encode())
+            error_data = json.dumps(error_response).encode()
+            
+            # Always use old protocol for errors for now
+            try:
+                client_socket.send(error_data)
+            except:
+                pass
         finally:
             client_socket.close()
 
