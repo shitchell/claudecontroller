@@ -394,33 +394,61 @@ class ProcessManager:
                         response = self.handle_command(command, args)
                         response_data = json.dumps(response).encode()
                         
+                        # Log large responses
+                        if len(response_data) > 1_000_000:
+                            self.logger.info(f"Sending large response: {len(response_data):,} bytes")
+                        
                         # Send length prefix followed by response
                         length_prefix = len(response_data).to_bytes(8, 'big')
-                        client_socket.send(length_prefix + response_data)
+                        client_socket.sendall(length_prefix + response_data)
                         return
             except socket.timeout:
                 pass
             
             # Fall back to old protocol (direct JSON)
             client_socket.settimeout(self.socket_timeout)
-            data = client_socket.recv(4096)
+            # Read until we get complete JSON
+            data = b''
+            while True:
+                chunk = client_socket.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                try:
+                    # Try to parse JSON to see if we have complete data
+                    json.loads(data.decode())
+                    break
+                except:
+                    # Not complete yet, keep reading
+                    continue
+            
             if data:
                 request = json.loads(data.decode())
                 command = request.get('command', '')
                 args = request.get('args', [])
                 
                 response = self.handle_command(command, args)
+                response_data = json.dumps(response).encode()
                 
-                client_socket.send(json.dumps(response).encode())
+                # For large responses in old protocol, send in chunks
+                sent = 0
+                while sent < len(response_data):
+                    chunk_size = client_socket.send(response_data[sent:sent + 65536])
+                    sent += chunk_size
         except Exception as e:
             error_response = {'success': False, 'error': str(e)}
             error_data = json.dumps(error_response).encode()
             
-            # Always use old protocol for errors for now
+            # Send error using new protocol with length prefix
             try:
-                client_socket.send(error_data)
+                length_prefix = len(error_data).to_bytes(8, 'big')
+                client_socket.send(length_prefix + error_data)
             except:
-                pass
+                # If that fails, try old protocol
+                try:
+                    client_socket.send(error_data)
+                except:
+                    pass
         finally:
             client_socket.close()
 
